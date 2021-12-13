@@ -1,5 +1,6 @@
 module WJFKNN
 export WjfKNN, knnSearch
+using WJFParallelTask
 
 function findCenter(
     data::Vector,
@@ -7,11 +8,8 @@ function findCenter(
     maxNumSamples::UInt32,
     distSqrFun::Function,
 )::UInt32
-    numCPUs = length(Sys.cpu_info())
-    jobs = Channel{Tuple{Int,Int}}(numCPUs)
-    jobOutputs = Channel{Tuple{Float64,UInt32}}(numCPUs)
     numItems = length(items)
-    numSamples::UInt32 = min(UInt32(ceil(sqrt(numItems))), maxNumSamples)
+    numSamples = min(UInt32(ceil(sqrt(numItems))), maxNumSamples)
     samples::Set{UInt32} = Set{UInt32}()
     for idxSample = 1:numSamples
         sample = (rand(UInt32) % numItems) + 1
@@ -21,44 +19,40 @@ function findCenter(
         push!(samples, sample)
     end
     sampleLists::Vector{UInt32} = [sample for sample in samples]
-    sampleDists::Vector{Float64} = Vector{Float64}(undef, numSamples)
 
-    function makeJobs(batchSize::Int)
-        for i = 1:batchSize:numSamples
-            put!(jobs, (i, min(i + batchSize - 1, numSamples)))
-        end
-    end
-    function runJob(iCPU::Int)
+    function mapFun(u0::UInt32, u1::UInt32)::Tuple{Float64, UInt32}
         mySmallestSumDSqr = Inf64
-        myBestSample = 0
-        for job in jobs
-            for u = job[1]:job[2]
-                sumDSqr::Float64 = 0.0
-                for v = 1:numSamples
-                    sumDSqr += distSqrFun(data[sampleLists[u]], data[sampleLists[v]])
-                end
-                if sumDSqr < mySmallestSumDSqr
-                    mySmallestSumDSqr = sumDSqr
-                    myBestSample = sampleLists[u]
-                end
-            end # u
-        end # job
-        put!(jobOutputs, (mySmallestSumDSqr, myBestSample))
-    end # runJob
-    bind(jobs, @async makeJobs(100))
-    for iCPU = 1:numCPUs
-        Threads.@spawn runJob(iCPU)
-        #runJob(iCPU)
+        myBestSample = UInt32(0)
+        for u = u0:u1
+            sumDSqr::Float64 = 0.0
+            for v = 1:numSamples
+                sumDSqr += distSqrFun(data[sampleLists[u]], data[sampleLists[v]])
+            end
+            if sumDSqr < mySmallestSumDSqr
+                mySmallestSumDSqr = sumDSqr
+                myBestSample = sampleLists[u]
+            end
+        end # u
+        return (mySmallestSumDSqr, myBestSample)
     end
-    smallestDSumSqr = Inf64
-    bestSample = 0
-    for iCPU = 1:numCPUs
-        (mySmallestSumDSqr, myBestSample) = take!(jobOutputs)
-        if mySmallestSumDSqr < smallestDSumSqr
-            smallestDSumSqr = mySmallestSumDSqr
-            bestSample = myBestSample
+
+    function reduceFun(values::Vector{Tuple{Float64, UInt32}}
+        )::Tuple{Float64, UInt32}
+        mySmallestSumDSqr = Inf64
+        myBestSample = UInt32(0)
+        for (sumDSqr, sample) in values
+            if sumDSqr < mySmallestSumDSqr
+                mySmallestSumDSqr = sumDSqr
+                myBestSample = sample
+            end
         end
+        return (mySmallestSumDSqr, myBestSample)
     end
+
+    (smallestSumDSqr, bestSample) = mapReduce(
+        UInt32(1), numSamples, UInt32(100),
+        mapFun, reduceFun, (Inf64, UInt32(0)))
+
     @assert bestSample > 0
     return items[bestSample]
 end
@@ -70,47 +64,41 @@ function findFarthestItem(
     subCenters::Vector{UInt32},
     distSqrFun::Function,
 )::UInt32
-    numCPUs = length(Sys.cpu_info())
-    jobs = Channel{Tuple{Int,Int}}(numCPUs)
-    jobOutputs = Channel{Tuple{Float64,UInt32}}(numCPUs)
-    numItems = length(items)
-    function makeJobs(batchSize::Int)
-        for i = 1:batchSize:numItems
-            put!(jobs, (i, min(i + batchSize - 1, numItems)))
-        end
-    end
-    function runJob(iCPU::Int)
+    function mapFun(u0::UInt32, u1::UInt32)::Tuple{Float64,UInt32}
         myFarthestDistSqr = 0.0
         myFarthestItem = 0
-        for job in jobs
-            for u = job[1]:job[2]
-                item = items[u]
-                myDistSqr = distSqrFun(data[item], center)
-                for j in subCenters
-                    myDistSqr = min(myDistSqr, distSqrFun(data[item], data[j]))
-                end
-                if myDistSqr > myFarthestDistSqr
-                    myFarthestItem = items[u]
-                    myFarthestDistSqr = myDistSqr
-                end
-            end # u
-        end # job
-        put!(jobOutputs, (myFarthestDistSqr, myFarthestItem))
-    end # runJob
-    bind(jobs, @async makeJobs(100))
-    for iCPU = 1:numCPUs
-        Threads.@spawn runJob(iCPU)
-        #runJob(iCPU)
+        for u = u0:u1
+            item = items[u]
+            myDistSqr = distSqrFun(data[item], center)
+            for j in subCenters
+                myDistSqr = min(myDistSqr, distSqrFun(data[item], data[j]))
+            end
+            if myDistSqr > myFarthestDistSqr
+                myFarthestItem = items[u]
+                myFarthestDistSqr = myDistSqr
+            end
+        end # u
+        return (myFarthestDistSqr, myFarthestItem)
     end
-    farthestDistSqr = 0.0
-    farthestItem = 0
-    for iCPU = 1:numCPUs
-        (myFarthestDistSqr, myFarthestItem) = take!(jobOutputs)
-        if myFarthestDistSqr > farthestDistSqr
-            farthestDistSqr = myFarthestDistSqr
-            farthestItem = myFarthestItem
+
+    function reduceFun(values::Vector{Tuple{Float64,UInt32}}
+        )::Tuple{Float64,UInt32}
+        myFarthestDistSqr = 0.0
+        myFarthestItem = 0
+        for (distSqr, item) in values
+            if distSqr > myFarthestDistSqr
+                myFarthestDistSqr = distSqr
+                myFarthestItem = item
+            end
         end
+        return (myFarthestDistSqr, myFarthestItem)
     end
+
+    numItems = length(items)
+    (farthestDistSqr, farthestItem) = mapReduce(
+        UInt32(1), UInt32(numItems), UInt32(100),
+        mapFun, reduceFun, (0.0, UInt32(0))
+    )
     @assert farthestItem != 0
     return farthestItem
 end
@@ -136,47 +124,29 @@ function computeSubCoverSetInfos(
     subCenters::Vector{UInt32},
     distSqrFun::Function,
 )::Vector{Tuple{UInt32,UInt32,Float64,Float64}}
-    numCPUs = length(Sys.cpu_info())
-    jobs = Channel{Tuple{Int,Int}}(numCPUs)
-    jobOutputs = Channel{Bool}(numCPUs)
     numItems = length(items)
     subCoverSetInfos::Vector{Tuple{Int32,Int32,Float64,Float64}} =
         Vector{Tuple{Int32,Int32,Float64,Float64}}(undef, numItems)
-    function makeJobs(batchSize::Int)
-        for i = 1:batchSize:numItems
-            put!(jobs, (i, min(i + batchSize - 1, numItems)))
-        end
-    end
-    function runJob(iCPU::Int)
+    function mapFun(u0::UInt32, u1::UInt32)
         mySubCenterDists = fill(0.0, (length(subCenters),))
         mySubCenterRanks = Vector{UInt32}(undef, length(subCenters))
-        for job in jobs
-            for u = job[1]:job[2]
-                item = items[u]
-                for i::UInt32 = 1:length(subCenters)
-                    mySubCenterRanks[i] = i
-                    mySubCenterDists[i] =
-                        distSqrFun(data[item], data[subCenters[i]])
-                end
-                sort!(mySubCenterRanks, by = x -> mySubCenterDists[x])
-                subCoverSetInfos[u] = (
-                    mySubCenterRanks[1],
-                    mySubCenterRanks[2],
-                    mySubCenterDists[mySubCenterRanks[1]],
-                    mySubCenterDists[mySubCenterRanks[2]],
-                )
-            end # u
-        end # job
-        put!(jobOutputs, true)
-    end # runJob
-    bind(jobs, @async makeJobs(100))
-    for iCPU = 1:numCPUs
-        Threads.@spawn runJob(iCPU)
-        #runJob(iCPU)
+        for u = u0:u1
+            item = items[u]
+            for i::UInt32 = 1:length(subCenters)
+                mySubCenterRanks[i] = i
+                mySubCenterDists[i] =
+                    distSqrFun(data[item], data[subCenters[i]])
+            end
+            sort!(mySubCenterRanks, by = x -> mySubCenterDists[x])
+            subCoverSetInfos[u] = (
+                mySubCenterRanks[1],
+                mySubCenterRanks[2],
+                mySubCenterDists[mySubCenterRanks[1]],
+                mySubCenterDists[mySubCenterRanks[2]],
+            )
+        end # u
     end
-    for iCPU = 1:numCPUs
-        take!(jobOutputs)
-    end
+    mapOnly(UInt32(1), UInt32(numItems), UInt32(100), mapFun)
     return subCoverSetInfos
 end
 
@@ -316,30 +286,12 @@ function knnSearch(
     numData = length(wjfknn.data)
     result::Vector{Vector{Tuple{Float64, UInt32}}} =
         Vector{Vector{Tuple{Float64, UInt32}}}(undef, numData)
-    numCPUs = length(Sys.cpu_info())
-    jobs = Channel{Tuple{Int,Int}}(numCPUs)
-    jobOutputs = Channel{Bool}(numCPUs)
-    function makeJobs(batchSize::Int)
-        for i = 1:batchSize:numData
-            put!(jobs, (i, min(i + batchSize - 1, numData)))
-        end
+    function mapFun(u1::UInt32, u2::UInt32)
+        for u::UInt32 = u1:u2
+            result[u] = knnSearch(wjfknn, u, k, bisearchThres)
+        end # u
     end
-    function runJob(iCPU::Int)
-        for job in jobs
-            for u::UInt32 = job[1]:job[2]
-                result[u] = knnSearch(wjfknn, u, k, bisearchThres)
-            end # u
-        end # job
-        put!(jobOutputs, true)
-    end # runJob
-    bind(jobs, @async makeJobs(100))
-    for iCPU = 1:numCPUs
-        Threads.@spawn runJob(iCPU)
-        #runJob(iCPU)
-    end
-    for iCPU = 1:numCPUs
-        take!(jobOutputs)
-    end
+    mapOnly(UInt32(1), UInt32(numData), UInt32(100), mapFun)
     return result
 end
 
