@@ -1,8 +1,8 @@
 name = "WJFKNN"
 uuid = "b432dcb5-e94d-4c0c-a8ef-d237aaab788a"
 authors = ["wujunfeng1 <59754256+wujunfeng1@users.noreply.github.com>"]
-version = "0.1.2"
+version = "0.1.3"
 [deps]
-WJFParallelTask = "0.1.0"
+WJFParallelTask = "e651f0bd-5ae6-4ed7-94b7-345472aabd1c"
 [compat]
 julia = "1.6,1.7"
