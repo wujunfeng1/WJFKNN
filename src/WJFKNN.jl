@@ -49,11 +49,13 @@ function findCenter(
         return (mySmallestSumDSqr, myBestSample)
     end
 
-    (smallestSumDSqr, bestSample) = mapReduce(
-        UInt32(1), numSamples, UInt32(100),
-        mapFun, reduceFun, (Inf64, UInt32(0)))
+    bestSample = 0
+    while bestSample == 0
+        (smallestSumDSqr, bestSample) = mapReduce(
+            UInt32(1), numSamples, UInt32(100),
+            mapFun, reduceFun, (Inf64, UInt32(0)))
+    end
 
-    @assert bestSample > 0
     return items[bestSample]
 end
 
@@ -95,11 +97,13 @@ function findFarthestItem(
     end
 
     numItems = length(items)
-    (farthestDistSqr, farthestItem) = mapReduce(
-        UInt32(1), UInt32(numItems), UInt32(100),
-        mapFun, reduceFun, (0.0, UInt32(0))
-    )
-    @assert farthestItem != 0
+    farthestItem = 0
+    while farthestItem == 0
+        (farthestDistSqr, farthestItem) = mapReduce(
+            UInt32(1), UInt32(numItems), UInt32(100),
+            mapFun, reduceFun, (0.0, UInt32(0))
+        )
+    end
     return farthestItem
 end
 
@@ -227,7 +231,7 @@ end
 function WjfKNN(
     data::Vector,
     distSqrFun::Function,
-    maxNumSamples::UInt32 = UInt32(100),
+    maxNumSamples::UInt32 = UInt32(1000),
     numPartitionsPerNode::UInt32 = UInt32(16),
 )
     return WjfKNN(

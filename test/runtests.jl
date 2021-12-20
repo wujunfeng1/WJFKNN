@@ -26,10 +26,8 @@ function euclidDistSqr(u::Vector{Float64}, v::Vector{Float64})
     return sum((u .- v).^2)
 end
 
-function cosDistSqr(data::Vector{Vector{Float64}},
-    i::UInt32, j::UInt32)
-    return sum(data[i].*data[j])^2 /
-        (sum(data[i].*data[i]) * sum(data[j].*data[j]))
+function cosDistSqr(u::Vector{Float64}, v::Vector{Float64})
+    return 0.5 - 0.5 * sum(u.*v)^2 /(sum(u.*u) * sum(v.*v))
 end
 
 function baselineKNN(distSqrFun::Function)::Vector{Vector{Tuple{Float64,UInt32}}}
@@ -65,8 +63,18 @@ function computeAccuracy(a::Vector{Vector{Tuple{Float64,UInt32}}}, b::Vector{Vec
     return accuracy
 end
 
-#@testset "eclidean distance knn" begin
-@time a = baselineKNN(euclidDistSqr)
-@time b = wjfKNN(euclidDistSqr)
-println("accuracy = $(computeAccuracy(a, b))")
-#end
+@testset "cos distance knn" begin
+    @time a = baselineKNN(cosDistSqr)
+    for round = 1:100
+        @time b = wjfKNN(cosDistSqr)
+        @test computeAccuracy(a, b) > 0.9
+    end
+end
+
+@testset "euclid distance knn" begin
+    @time a = baselineKNN(euclidDistSqr)
+    for round = 1:100
+        @time b = wjfKNN(euclidDistSqr)
+        @test computeAccuracy(a, b) > 0.9
+    end
+end
